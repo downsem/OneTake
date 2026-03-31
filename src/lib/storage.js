@@ -17,6 +17,5 @@ export async function uploadVideoForUser({ userId, localUri }) {
   });
 
   const downloadURL = await getDownloadURL(fileRef);
-
   return { storagePath, downloadURL };
 }

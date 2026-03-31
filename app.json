@@ -1,29 +1,31 @@
 {
   "expo": {
     "name": "OneTake",
-    "slug": "OneTake",
+    "slug": "onetake",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
+    "scheme": "onetake",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["ios", "android", "web"],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.downsem.onetake",
+      "infoPlist": {
+        "NSCameraUsageDescription": "OneTake needs camera access to record your takes.",
+        "NSMicrophoneUsageDescription": "OneTake needs microphone access to record audio in your takes."
+      }
     },
     "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": true
+      "package": "com.downsem.onetake",
+      "permissions": ["CAMERA", "RECORD_AUDIO"]
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "bundler": "metro"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "REPLACE_WITH_EAS_PROJECT_ID"
+      }
     }
   }
 }

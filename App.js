@@ -1,10 +1,12 @@
 import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { Video, ResizeMode } from 'expo-av';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Linking,
   Platform,
   SafeAreaView,
   StyleSheet,
@@ -14,8 +16,9 @@ import {
   View,
 } from 'react-native';
 
-import { auth, db } from './src/lib/firebase';
+import { auth } from './src/lib/firebase';
 import { uploadVideoForUser } from './src/lib/storage';
+import { createTake, deleteTake, subscribeToUserTakes } from './src/services/takesService';
 
 import {
   createUserWithEmailAndPassword,
@@ -24,36 +27,27 @@ import {
   signOut,
 } from 'firebase/auth';
 
-import {
-  addDoc,
-  collection,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-} from 'firebase/firestore';
+const APP_VERSION = 'MVP v1.0';
 
 export default function App() {
-  const [screen, setScreen] = useState('home'); // home | camera | takes
-
-  // Auth
+  const [screen, setScreen] = useState('home'); // home | camera | takes | takeDetail | settings
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [authMode, setAuthMode] = useState('signin'); // signin | signup
+
+  const [authMode, setAuthMode] = useState('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
 
-  // Takes
   const [takes, setTakes] = useState([]);
   const [takesLoading, setTakesLoading] = useState(false);
+  const [selectedTake, setSelectedTake] = useState(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
-  // Camera
   const [isRecording, setIsRecording] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
 
-  // ---------- AUTH LISTENER ----------
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser || null);
@@ -62,7 +56,6 @@ export default function App() {
     return unsub;
   }, []);
 
-  // ---------- TAKES LISTENER ----------
   useEffect(() => {
     if (!user?.uid) {
       setTakes([]);
@@ -70,25 +63,9 @@ export default function App() {
     }
 
     setTakesLoading(true);
-
-    const takesRef = collection(db, 'users', user.uid, 'takes');
-    const q = query(takesRef, orderBy('createdAtClient', 'desc'));
-
-    const unsub = onSnapshot(
-      q,
-      (snapshot) => {
-        const items = snapshot.docs.map((doc) => {
-          const data = doc.data();
-          return {
-            id: doc.id,
-            localUri: data.localUri || '',
-            source: data.source || 'unknown',
-            createdAt: data.createdAt?.toDate?.()?.toISOString?.() || null,
-            createdAtClient: data.createdAtClient || 0,
-            downloadURL: data.downloadURL || '',
-            storagePath: data.storagePath || '',
-          };
-        });
+    const unsub = subscribeToUserTakes(
+      user.uid,
+      (items) => {
         setTakes(items);
         setTakesLoading(false);
       },
@@ -101,13 +78,11 @@ export default function App() {
     return unsub;
   }, [user?.uid]);
 
-  // ---------- AUTH ----------
   const handleAuthSubmit = async () => {
     if (!email.trim() || !password.trim()) {
       Alert.alert('Missing fields', 'Please enter email and password.');
       return;
     }
-
     if (password.length < 6) {
       Alert.alert('Password too short', 'Use at least 6 characters.');
       return;
@@ -120,7 +95,6 @@ export default function App() {
       } else {
         await signInWithEmailAndPassword(auth, email.trim(), password);
       }
-
       setPassword('');
       setScreen('home');
     } catch (err) {
@@ -134,41 +108,52 @@ export default function App() {
     try {
       await signOut(auth);
       setScreen('home');
+      setSelectedTake(null);
     } catch (err) {
       Alert.alert('Sign out error', err?.message || String(err));
     }
   };
 
-  // ---------- SAVE TAKE METADATA ----------
-  const saveTakeDoc = async ({
-    localUri,
-    source,
-    downloadURL = '',
-    storagePath = '',
-  }) => {
+  const saveTakeDoc = async ({ localUri, source, downloadURL = '', storagePath = '' }) => {
     if (!user?.uid) {
       Alert.alert('Sign in required', 'Please sign in to save takes.');
       return;
     }
-
-    await addDoc(collection(db, 'users', user.uid, 'takes'), {
-      localUri: localUri || '',
-      source: source || 'unknown',
-      downloadURL,
-      storagePath,
-      createdAt: serverTimestamp(),
-      createdAtClient: Date.now(),
-    });
+    await createTake(user.uid, { localUri, source, downloadURL, storagePath });
   };
 
-  // ---------- CAMERA FLOW ----------
+  const doDeleteTake = async (take) => {
+    if (!user?.uid || !take?.id) return;
+    setDeleteBusy(true);
+    try {
+      await deleteTake(user.uid, take.id);
+      Alert.alert('Deleted', 'Take removed from Firestore.');
+      setScreen('takes');
+      setSelectedTake(null);
+    } catch (err) {
+      Alert.alert('Delete error', err?.message || String(err));
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const confirmDeleteTake = (take) => {
+    if (Platform.OS === 'web') {
+      const ok = window.confirm('Delete this take?');
+      if (ok) doDeleteTake(take);
+      return;
+    }
+    Alert.alert('Delete take?', 'This removes metadata from Firestore.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => doDeleteTake(take) },
+    ]);
+  };
+
   const openCamera = async () => {
     if (!user?.uid) {
       Alert.alert('Sign in first', 'Create an account or sign in before recording.');
       return;
     }
-
-    // Web fallback mode (Codespaces)
     if (Platform.OS === 'web') {
       setScreen('camera');
       return;
@@ -178,35 +163,26 @@ export default function App() {
       Alert.alert('Please wait', 'Checking camera permission...');
       return;
     }
-
     if (!permission.granted) {
       const result = await requestPermission();
       if (!result.granted) {
-        Alert.alert(
-          'Camera access needed',
-          'Please allow camera permission so you can record a take.'
-        );
+        Alert.alert('Camera access needed', 'Please allow camera permission.');
         return;
       }
     }
-
     setScreen('camera');
   };
 
   const startRecording = async () => {
-    // Web demo fallback (no real video file in Codespaces web)
     if (Platform.OS === 'web') {
       setIsRecording(true);
       setTimeout(async () => {
         try {
-          const fakeUri = `web-demo://take-${Date.now()}`;
           await saveTakeDoc({
-            localUri: fakeUri,
+            localUri: `web-demo://take-${Date.now()}`,
             source: 'web-demo',
-            downloadURL: '',
-            storagePath: '',
           });
-          Alert.alert('Take saved', 'Web demo take saved to Firestore.');
+          Alert.alert('Take saved', 'Web demo take saved.');
         } catch (err) {
           Alert.alert('Save error', err?.message || String(err));
         } finally {
@@ -217,7 +193,6 @@ export default function App() {
       return;
     }
 
-    // Native path: record -> upload -> save doc
     try {
       if (!cameraRef.current) {
         Alert.alert('Camera not ready', 'Please wait a second and try again.');
@@ -225,15 +200,12 @@ export default function App() {
       }
 
       setIsRecording(true);
-
       const video = await cameraRef.current.recordAsync({ maxDuration: 30 });
 
       if (!video?.uri) {
-        Alert.alert('No video captured', 'Please try recording again.');
+        Alert.alert('No video captured', 'Please try again.');
         return;
       }
-
-      Alert.alert('Uploading...', 'Please wait while your video uploads.');
 
       const { storagePath, downloadURL } = await uploadVideoForUser({
         userId: user.uid,
@@ -247,7 +219,7 @@ export default function App() {
         storagePath,
       });
 
-      Alert.alert('Take saved', 'Video uploaded and saved to Firestore.');
+      Alert.alert('Take saved', 'Video uploaded and saved.');
       setScreen('home');
     } catch (error) {
       Alert.alert('Recording/upload error', String(error?.message || error));
@@ -258,11 +230,8 @@ export default function App() {
 
   const stopRecording = () => {
     if (Platform.OS === 'web') return;
-
     try {
-      if (cameraRef.current && isRecording) {
-        cameraRef.current.stopRecording();
-      }
+      if (cameraRef.current && isRecording) cameraRef.current.stopRecording();
     } catch (error) {
       Alert.alert('Stop error', String(error?.message || error));
     }
@@ -283,7 +252,6 @@ export default function App() {
     return `${takes.length} takes saved`;
   }, [takes.length]);
 
-  // ---------- LOADING ----------
   if (authLoading) {
     return (
       <SafeAreaView style={styles.safeArea}>
@@ -296,7 +264,6 @@ export default function App() {
     );
   }
 
-  // ---------- AUTH SCREEN ----------
   if (!user) {
     return (
       <SafeAreaView style={styles.safeArea}>
@@ -344,28 +311,23 @@ export default function App() {
                 : 'Already have an account? Sign in'}
             </Text>
           </TouchableOpacity>
+
+          <Text style={styles.versionText}>{APP_VERSION}</Text>
         </View>
       </SafeAreaView>
     );
   }
 
-  // ---------- CAMERA SCREEN ----------
   if (screen === 'camera') {
     const isWeb = Platform.OS === 'web';
 
     return (
       <View style={styles.cameraScreen}>
         <StatusBar style="light" />
-
         {isWeb ? (
           <View style={styles.webCameraPlaceholder}>
             <Text style={styles.webCameraTitle}>Web Demo Mode</Text>
-            <Text style={styles.webCameraText}>
-              In web/Codespaces, recording creates a demo take in Firestore.
-            </Text>
-            <Text style={styles.webCameraText}>
-              Real file upload works on mobile device recording.
-            </Text>
+            <Text style={styles.webCameraText}>In web/Codespaces, we save a demo take.</Text>
           </View>
         ) : (
           <CameraView ref={cameraRef} style={styles.cameraPreview} facing="back" mode="video" />
@@ -403,7 +365,69 @@ export default function App() {
     );
   }
 
-  // ---------- TAKES SCREEN ----------
+  if (screen === 'takeDetail' && selectedTake) {
+    const canPlay = !!selectedTake.downloadURL;
+
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="light" />
+        <View style={styles.container}>
+          <Text style={styles.title}>Take Detail</Text>
+          <Text style={styles.subtitle}>{formatDate(selectedTake.createdAt)}</Text>
+
+          <View style={styles.takeCard}>
+            <Text style={styles.takeMeta}>Source: {selectedTake.source}</Text>
+            <Text style={styles.takeUri} numberOfLines={2}>
+              localUri: {selectedTake.localUri || '(none)'}
+            </Text>
+            <Text style={styles.takeUri} numberOfLines={2}>
+              downloadURL: {selectedTake.downloadURL || '(none)'}
+            </Text>
+          </View>
+
+          {canPlay ? (
+            <View style={styles.videoWrap}>
+              <Video
+                style={styles.video}
+                source={{ uri: selectedTake.downloadURL }}
+                useNativeControls
+                resizeMode={ResizeMode.CONTAIN}
+                isLooping={false}
+              />
+            </View>
+          ) : (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyText}>
+                No playable URL yet (web-demo takes do not upload video files).
+              </Text>
+            </View>
+          )}
+
+          {canPlay && (
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={() => Linking.openURL(selectedTake.downloadURL)}
+            >
+              <Text style={styles.secondaryButtonText}>Open Video URL</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
+            style={styles.deleteButton}
+            onPress={() => confirmDeleteTake(selectedTake)}
+            disabled={deleteBusy}
+          >
+            <Text style={styles.deleteButtonText}>{deleteBusy ? 'Deleting...' : 'Delete Take'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.secondaryButton} onPress={() => setScreen('takes')}>
+            <Text style={styles.secondaryButtonText}>Back to My Takes</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   if (screen === 'takes') {
     return (
       <SafeAreaView style={styles.safeArea}>
@@ -431,11 +455,27 @@ export default function App() {
                   <Text style={styles.takeMeta}>{formatDate(item.createdAt)}</Text>
                   <Text style={styles.takeMeta}>Source: {item.source}</Text>
                   <Text style={styles.takeUri} numberOfLines={1}>
-                    localUri: {item.localUri || '(none)'}
-                  </Text>
-                  <Text style={styles.takeUri} numberOfLines={1}>
                     downloadURL: {item.downloadURL ? 'available ✅' : 'not available'}
                   </Text>
+
+                  <View style={styles.row}>
+                    <TouchableOpacity
+                      style={styles.smallButton}
+                      onPress={() => {
+                        setSelectedTake(item);
+                        setScreen('takeDetail');
+                      }}
+                    >
+                      <Text style={styles.smallButtonText}>Open</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.smallDangerButton}
+                      onPress={() => confirmDeleteTake(item)}
+                    >
+                      <Text style={styles.smallButtonText}>Delete</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               )}
             />
@@ -449,7 +489,36 @@ export default function App() {
     );
   }
 
-  // ---------- HOME ----------
+  if (screen === 'settings') {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="light" />
+        <View style={styles.container}>
+          <Text style={styles.title}>Settings</Text>
+          <Text style={styles.subtitle}>Manage your account and app info.</Text>
+
+          <View style={styles.takeCard}>
+            <Text style={styles.takeMeta}>Signed in as</Text>
+            <Text style={styles.takeTitle}>{user.email}</Text>
+          </View>
+
+          <View style={styles.takeCard}>
+            <Text style={styles.takeMeta}>App version</Text>
+            <Text style={styles.takeTitle}>{APP_VERSION}</Text>
+          </View>
+
+          <TouchableOpacity style={styles.deleteButton} onPress={handleSignOut}>
+            <Text style={styles.deleteButtonText}>Sign Out</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.secondaryButton} onPress={() => setScreen('home')}>
+            <Text style={styles.secondaryButtonText}>Back to Home</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
@@ -465,9 +534,11 @@ export default function App() {
           <Text style={styles.secondaryButtonText}>View My Takes</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.signOutButton} onPress={handleSignOut}>
-          <Text style={styles.signOutText}>Sign Out</Text>
+        <TouchableOpacity style={styles.secondaryButton} onPress={() => setScreen('settings')}>
+          <Text style={styles.secondaryButtonText}>Settings</Text>
         </TouchableOpacity>
+
+        <Text style={styles.versionText}>{APP_VERSION}</Text>
       </View>
     </SafeAreaView>
   );
@@ -478,20 +549,9 @@ const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 24, justifyContent: 'center' },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20 },
 
-  title: {
-    fontSize: 42,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  subtitle: {
-    fontSize: 16,
-    lineHeight: 24,
-    color: '#C7D2FE',
-    textAlign: 'center',
-    marginBottom: 24,
-  },
+  title: { fontSize: 42, fontWeight: '800', color: '#FFFFFF', marginBottom: 12, textAlign: 'center' },
+  subtitle: { fontSize: 16, lineHeight: 24, color: '#C7D2FE', textAlign: 'center', marginBottom: 24 },
+  versionText: { marginTop: 8, color: '#64748B', fontSize: 12, textAlign: 'center' },
 
   input: {
     backgroundColor: '#111827',
@@ -530,16 +590,14 @@ const styles = StyleSheet.create({
   },
   secondaryButtonText: { color: '#E2E8F0', fontSize: 16, fontWeight: '600' },
 
-  signOutButton: {
-    marginTop: 6,
+  deleteButton: {
+    backgroundColor: '#B91C1C',
+    paddingVertical: 14,
+    borderRadius: 12,
     alignItems: 'center',
-    paddingVertical: 12,
+    marginBottom: 10,
   },
-  signOutText: {
-    color: '#FCA5A5',
-    fontSize: 14,
-    fontWeight: '700',
-  },
+  deleteButtonText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
 
   cameraScreen: { flex: 1, backgroundColor: '#000' },
   cameraPreview: { flex: 1 },
@@ -551,41 +609,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     backgroundColor: '#020617',
   },
-  webCameraTitle: {
-    color: '#FFFFFF',
-    fontSize: 24,
-    fontWeight: '700',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  webCameraText: {
-    color: '#C7D2FE',
-    fontSize: 14,
-    textAlign: 'center',
-    marginBottom: 6,
-  },
+  webCameraTitle: { color: '#FFFFFF', fontSize: 24, fontWeight: '700', marginBottom: 8, textAlign: 'center' },
+  webCameraText: { color: '#C7D2FE', fontSize: 14, textAlign: 'center', marginBottom: 6 },
 
   cameraOverlay: {
     position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
+    left: 0, right: 0, bottom: 0,
     padding: 16,
     backgroundColor: 'rgba(11,16,32,0.85)',
   },
-  cameraTitle: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginBottom: 6,
-  },
-  cameraSubtitle: {
-    color: '#C7D2FE',
-    fontSize: 14,
-    textAlign: 'center',
-    marginBottom: 14,
-  },
+  cameraTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: '700', textAlign: 'center', marginBottom: 6 },
+  cameraSubtitle: { color: '#C7D2FE', fontSize: 14, textAlign: 'center', marginBottom: 14 },
 
   listContent: { paddingBottom: 16 },
   takeCard: {
@@ -609,6 +643,34 @@ const styles = StyleSheet.create({
     backgroundColor: '#111827',
   },
   emptyText: { color: '#CBD5E1', textAlign: 'center' },
+
+  videoWrap: {
+    height: 220,
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginBottom: 12,
+    backgroundColor: '#000',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  video: { width: '100%', height: '100%', backgroundColor: '#000' },
+
+  row: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  smallButton: {
+    flex: 1,
+    backgroundColor: '#334155',
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  smallDangerButton: {
+    flex: 1,
+    backgroundColor: '#7F1D1D',
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  smallButtonText: { color: '#FFF', fontWeight: '700' },
 
   infoText: { marginTop: 12, color: '#C7D2FE', textAlign: 'center' },
 });
