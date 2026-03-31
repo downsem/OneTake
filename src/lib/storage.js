@@ -12,10 +12,8 @@ export async function uploadVideoForUser({ userId, localUri }) {
   const storagePath = `users/${userId}/takes/${filename}`;
   const fileRef = ref(storage, storagePath);
 
-  await uploadBytes(fileRef, blob, {
-    contentType: 'video/mp4',
-  });
-
+  await uploadBytes(fileRef, blob, { contentType: 'video/mp4' });
   const downloadURL = await getDownloadURL(fileRef);
+
   return { storagePath, downloadURL };
 }

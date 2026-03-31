@@ -46,6 +46,6 @@ export async function createTake(userId, payload) {
   });
 }
 
-export async function deleteTake(userId, takeId) {
+export async function deleteTakeDoc(userId, takeId) {
   return deleteDoc(doc(db, 'users', userId, 'takes', takeId));
 }

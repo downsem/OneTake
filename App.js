@@ -18,7 +18,10 @@ import {
 
 import { auth } from './src/lib/firebase';
 import { uploadVideoForUser } from './src/lib/storage';
-import { createTake, deleteTake, subscribeToUserTakes } from './src/services/takesService';
+import { registerForPushTokenSafe } from './src/lib/notifications';
+import { createTake, deleteTakeDoc, subscribeToUserTakes } from './src/services/takesService';
+import { ensureUserProfile, setPushToken, subscribeToProfile } from './src/services/profileService';
+import { createPrompt, subscribeToPrompts } from './src/services/promptsService';
 
 import {
   createUserWithEmailAndPassword,
@@ -27,10 +30,10 @@ import {
   signOut,
 } from 'firebase/auth';
 
-const APP_VERSION = 'MVP v1.0';
+const APP_VERSION = 'MVP FINAL v1.0';
 
 export default function App() {
-  const [screen, setScreen] = useState('home'); // home | camera | takes | takeDetail | settings
+  const [screen, setScreen] = useState('home'); // home | camera | takes | takeDetail | settings | admin
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
 
@@ -39,31 +42,61 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
 
+  const [profile, setProfile] = useState(null);
+  const isAdmin = profile?.role === 'admin';
+
   const [takes, setTakes] = useState([]);
   const [takesLoading, setTakesLoading] = useState(false);
   const [selectedTake, setSelectedTake] = useState(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+
+  const [prompts, setPrompts] = useState([]);
+  const activePrompt = useMemo(() => prompts.find((p) => p.active), [prompts]);
+
+  const [newPromptTitle, setNewPromptTitle] = useState('');
+  const [newPromptMessage, setNewPromptMessage] = useState('');
 
   const [isRecording, setIsRecording] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (currentUser) => {
+    const unsub = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser || null);
       setAuthLoading(false);
+
+      if (currentUser) {
+        await ensureUserProfile(currentUser);
+        const token = await registerForPushTokenSafe();
+        if (token) {
+          try {
+            await setPushToken(currentUser.uid, token);
+          } catch {}
+        }
+      }
     });
     return unsub;
   }, []);
 
   useEffect(() => {
     if (!user?.uid) {
+      setProfile(null);
+      return;
+    }
+    return subscribeToProfile(
+      user.uid,
+      (data) => setProfile(data),
+      (err) => Alert.alert('Profile error', err.message || String(err))
+    );
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (!user?.uid) {
       setTakes([]);
       return;
     }
-
     setTakesLoading(true);
-    const unsub = subscribeToUserTakes(
+    return subscribeToUserTakes(
       user.uid,
       (items) => {
         setTakes(items);
@@ -71,11 +104,20 @@ export default function App() {
       },
       (err) => {
         setTakesLoading(false);
-        Alert.alert('Firestore error', err.message || String(err));
+        Alert.alert('Takes error', err.message || String(err));
       }
     );
+  }, [user?.uid]);
 
-    return unsub;
+  useEffect(() => {
+    if (!user?.uid) {
+      setPrompts([]);
+      return;
+    }
+    return subscribeToPrompts(
+      (items) => setPrompts(items),
+      (err) => Alert.alert('Prompts error', err.message || String(err))
+    );
   }, [user?.uid]);
 
   const handleAuthSubmit = async () => {
@@ -115,10 +157,7 @@ export default function App() {
   };
 
   const saveTakeDoc = async ({ localUri, source, downloadURL = '', storagePath = '' }) => {
-    if (!user?.uid) {
-      Alert.alert('Sign in required', 'Please sign in to save takes.');
-      return;
-    }
+    if (!user?.uid) return;
     await createTake(user.uid, { localUri, source, downloadURL, storagePath });
   };
 
@@ -126,8 +165,8 @@ export default function App() {
     if (!user?.uid || !take?.id) return;
     setDeleteBusy(true);
     try {
-      await deleteTake(user.uid, take.id);
-      Alert.alert('Deleted', 'Take removed from Firestore.');
+      await deleteTakeDoc(user.uid, take.id);
+      Alert.alert('Deleted', 'Take removed.');
       setScreen('takes');
       setSelectedTake(null);
     } catch (err) {
@@ -150,26 +189,23 @@ export default function App() {
   };
 
   const openCamera = async () => {
-    if (!user?.uid) {
-      Alert.alert('Sign in first', 'Create an account or sign in before recording.');
-      return;
-    }
+    if (!user?.uid) return;
+
     if (Platform.OS === 'web') {
       setScreen('camera');
       return;
     }
 
-    if (!permission) {
-      Alert.alert('Please wait', 'Checking camera permission...');
-      return;
-    }
+    if (!permission) return;
+
     if (!permission.granted) {
       const result = await requestPermission();
       if (!result.granted) {
-        Alert.alert('Camera access needed', 'Please allow camera permission.');
+        Alert.alert('Camera access needed', 'Allow camera permission to record.');
         return;
       }
     }
+
     setScreen('camera');
   };
 
@@ -194,18 +230,11 @@ export default function App() {
     }
 
     try {
-      if (!cameraRef.current) {
-        Alert.alert('Camera not ready', 'Please wait a second and try again.');
-        return;
-      }
-
+      if (!cameraRef.current) return;
       setIsRecording(true);
-      const video = await cameraRef.current.recordAsync({ maxDuration: 30 });
 
-      if (!video?.uri) {
-        Alert.alert('No video captured', 'Please try again.');
-        return;
-      }
+      const video = await cameraRef.current.recordAsync({ maxDuration: 30 });
+      if (!video?.uri) return;
 
       const { storagePath, downloadURL } = await uploadVideoForUser({
         userId: user.uid,
@@ -232,8 +261,31 @@ export default function App() {
     if (Platform.OS === 'web') return;
     try {
       if (cameraRef.current && isRecording) cameraRef.current.stopRecording();
-    } catch (error) {
-      Alert.alert('Stop error', String(error?.message || error));
+    } catch {}
+  };
+
+  const handleCreatePrompt = async () => {
+    if (!isAdmin) {
+      Alert.alert('Admin only', 'You are not an admin.');
+      return;
+    }
+    if (!newPromptTitle.trim()) {
+      Alert.alert('Missing title', 'Enter a prompt title.');
+      return;
+    }
+
+    try {
+      await createPrompt({
+        title: newPromptTitle.trim(),
+        message: newPromptMessage.trim(),
+        active: true,
+        authorUid: user.uid,
+      });
+      setNewPromptTitle('');
+      setNewPromptMessage('');
+      Alert.alert('Prompt created', 'New prompt added.');
+    } catch (err) {
+      Alert.alert('Prompt error', err?.message || String(err));
     }
   };
 
@@ -327,7 +379,7 @@ export default function App() {
         {isWeb ? (
           <View style={styles.webCameraPlaceholder}>
             <Text style={styles.webCameraTitle}>Web Demo Mode</Text>
-            <Text style={styles.webCameraText}>In web/Codespaces, we save a demo take.</Text>
+            <Text style={styles.webCameraText}>Start = save demo take</Text>
           </View>
         ) : (
           <CameraView ref={cameraRef} style={styles.cameraPreview} facing="back" mode="video" />
@@ -336,11 +388,7 @@ export default function App() {
         <View style={styles.cameraOverlay}>
           <Text style={styles.cameraTitle}>OneTake Camera</Text>
           <Text style={styles.cameraSubtitle}>
-            {isWeb
-              ? 'Start = save demo take'
-              : isRecording
-              ? 'Recording... tap Stop when done'
-              : 'Tap Start to record your one take'}
+            {isWeb ? 'Start = save demo take' : isRecording ? 'Recording...' : 'Tap Start'}
           </Text>
 
           {!isRecording ? (
@@ -397,9 +445,7 @@ export default function App() {
             </View>
           ) : (
             <View style={styles.emptyCard}>
-              <Text style={styles.emptyText}>
-                No playable URL yet (web-demo takes do not upload video files).
-              </Text>
+              <Text style={styles.emptyText}>No playable URL yet for this take.</Text>
             </View>
           )}
 
@@ -412,11 +458,7 @@ export default function App() {
             </TouchableOpacity>
           )}
 
-          <TouchableOpacity
-            style={styles.deleteButton}
-            onPress={() => confirmDeleteTake(selectedTake)}
-            disabled={deleteBusy}
-          >
+          <TouchableOpacity style={styles.deleteButton} onPress={() => confirmDeleteTake(selectedTake)} disabled={deleteBusy}>
             <Text style={styles.deleteButtonText}>{deleteBusy ? 'Deleting...' : 'Delete Take'}</Text>
           </TouchableOpacity>
 
@@ -489,6 +531,43 @@ export default function App() {
     );
   }
 
+  if (screen === 'admin') {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="light" />
+        <View style={styles.container}>
+          <Text style={styles.title}>Admin</Text>
+          <Text style={styles.subtitle}>Create in-app prompts for users.</Text>
+
+          <TextInput
+            style={styles.input}
+            placeholder="Prompt title"
+            placeholderTextColor="#94A3B8"
+            value={newPromptTitle}
+            onChangeText={setNewPromptTitle}
+          />
+
+          <TextInput
+            style={[styles.input, { minHeight: 90, textAlignVertical: 'top' }]}
+            placeholder="Prompt message"
+            placeholderTextColor="#94A3B8"
+            multiline
+            value={newPromptMessage}
+            onChangeText={setNewPromptMessage}
+          />
+
+          <TouchableOpacity style={styles.primaryButton} onPress={handleCreatePrompt}>
+            <Text style={styles.primaryButtonText}>Create Active Prompt</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.secondaryButton} onPress={() => setScreen('settings')}>
+            <Text style={styles.secondaryButtonText}>Back to Settings</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   if (screen === 'settings') {
     return (
       <SafeAreaView style={styles.safeArea}>
@@ -500,12 +579,19 @@ export default function App() {
           <View style={styles.takeCard}>
             <Text style={styles.takeMeta}>Signed in as</Text>
             <Text style={styles.takeTitle}>{user.email}</Text>
+            <Text style={styles.takeMeta}>Role: {profile?.role || 'user'}</Text>
           </View>
 
           <View style={styles.takeCard}>
             <Text style={styles.takeMeta}>App version</Text>
             <Text style={styles.takeTitle}>{APP_VERSION}</Text>
           </View>
+
+          {isAdmin && (
+            <TouchableOpacity style={styles.secondaryButton} onPress={() => setScreen('admin')}>
+              <Text style={styles.secondaryButtonText}>Open Admin Panel</Text>
+            </TouchableOpacity>
+          )}
 
           <TouchableOpacity style={styles.deleteButton} onPress={handleSignOut}>
             <Text style={styles.deleteButtonText}>Sign Out</Text>
@@ -525,6 +611,13 @@ export default function App() {
       <View style={styles.container}>
         <Text style={styles.title}>OneTake</Text>
         <Text style={styles.subtitle}>Signed in as: {user.email}</Text>
+
+        {activePrompt ? (
+          <View style={styles.promptCard}>
+            <Text style={styles.promptTitle}>Prompt: {activePrompt.title}</Text>
+            <Text style={styles.promptMessage}>{activePrompt.message}</Text>
+          </View>
+        ) : null}
 
         <TouchableOpacity style={styles.primaryButton} onPress={openCamera}>
           <Text style={styles.primaryButtonText}>Record One Take</Text>
@@ -552,6 +645,17 @@ const styles = StyleSheet.create({
   title: { fontSize: 42, fontWeight: '800', color: '#FFFFFF', marginBottom: 12, textAlign: 'center' },
   subtitle: { fontSize: 16, lineHeight: 24, color: '#C7D2FE', textAlign: 'center', marginBottom: 24 },
   versionText: { marginTop: 8, color: '#64748B', fontSize: 12, textAlign: 'center' },
+
+  promptCard: {
+    borderWidth: 1,
+    borderColor: '#4C1D95',
+    backgroundColor: '#1E1B4B',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+  },
+  promptTitle: { color: '#DDD6FE', fontWeight: '700', marginBottom: 4 },
+  promptMessage: { color: '#E9D5FF' },
 
   input: {
     backgroundColor: '#111827',
@@ -603,72 +707,48 @@ const styles = StyleSheet.create({
   cameraPreview: { flex: 1 },
 
   webCameraPlaceholder: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 24,
-    backgroundColor: '#020617',
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 24, backgroundColor: '#020617',
   },
   webCameraTitle: { color: '#FFFFFF', fontSize: 24, fontWeight: '700', marginBottom: 8, textAlign: 'center' },
   webCameraText: { color: '#C7D2FE', fontSize: 14, textAlign: 'center', marginBottom: 6 },
 
   cameraOverlay: {
-    position: 'absolute',
-    left: 0, right: 0, bottom: 0,
-    padding: 16,
-    backgroundColor: 'rgba(11,16,32,0.85)',
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    padding: 16, backgroundColor: 'rgba(11,16,32,0.85)',
   },
   cameraTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: '700', textAlign: 'center', marginBottom: 6 },
   cameraSubtitle: { color: '#C7D2FE', fontSize: 14, textAlign: 'center', marginBottom: 14 },
 
   listContent: { paddingBottom: 16 },
   takeCard: {
-    borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 10,
-    backgroundColor: '#111827',
+    borderWidth: 1, borderColor: '#334155', borderRadius: 12,
+    padding: 12, marginBottom: 10, backgroundColor: '#111827',
   },
   takeTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '700', marginBottom: 4 },
   takeMeta: { color: '#94A3B8', fontSize: 12, marginBottom: 6 },
   takeUri: { color: '#CBD5E1', fontSize: 12, marginBottom: 4 },
 
   emptyCard: {
-    borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-    backgroundColor: '#111827',
+    borderWidth: 1, borderColor: '#334155', borderRadius: 12,
+    padding: 16, marginBottom: 16, backgroundColor: '#111827',
   },
   emptyText: { color: '#CBD5E1', textAlign: 'center' },
 
   videoWrap: {
-    height: 220,
-    borderRadius: 12,
-    overflow: 'hidden',
-    marginBottom: 12,
-    backgroundColor: '#000',
-    borderWidth: 1,
-    borderColor: '#334155',
+    height: 220, borderRadius: 12, overflow: 'hidden', marginBottom: 12,
+    backgroundColor: '#000', borderWidth: 1, borderColor: '#334155',
   },
   video: { width: '100%', height: '100%', backgroundColor: '#000' },
 
   row: { flexDirection: 'row', gap: 8, marginTop: 8 },
   smallButton: {
-    flex: 1,
-    backgroundColor: '#334155',
-    borderRadius: 10,
-    paddingVertical: 10,
-    alignItems: 'center',
+    flex: 1, backgroundColor: '#334155', borderRadius: 10,
+    paddingVertical: 10, alignItems: 'center',
   },
   smallDangerButton: {
-    flex: 1,
-    backgroundColor: '#7F1D1D',
-    borderRadius: 10,
-    paddingVertical: 10,
-    alignItems: 'center',
+    flex: 1, backgroundColor: '#7F1D1D', borderRadius: 10,
+    paddingVertical: 10, alignItems: 'center',
   },
   smallButtonText: { color: '#FFF', fontWeight: '700' },
 
