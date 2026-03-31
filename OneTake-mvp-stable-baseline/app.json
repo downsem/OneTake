@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "OneTake",
+    "slug": "onetake",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "onetake",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["ios", "android", "web"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.downsem.onetake",
+      "infoPlist": {
+        "NSCameraUsageDescription": "OneTake needs camera access to record your takes.",
+        "NSMicrophoneUsageDescription": "OneTake needs microphone access to record audio in your takes."
+      }
+    },
+    "android": {
+      "package": "com.downsem.onetake",
+      "permissions": ["CAMERA", "RECORD_AUDIO"]
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "REPLACE_WITH_EAS_PROJECT_ID"
+      }
+    }
+  }
+}
