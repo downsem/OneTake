@@ -1,33 +1,50 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { getApp, getApps, initializeApp } from 'firebase/app';
+import {
+getAuth,
+getReactNativePersistence,
+initializeAuth,
+} from 'firebase/auth';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
+import { getFunctions } from 'firebase/functions';
 import { env, hasFirebaseEnv } from '../config/env';
 
 const hardcodedFallback = {
-  apiKey: 'AIzaSyA7ScJW4UKvFIsCCe7iuvFQlrtTsuKVhlc',
-  authDomain: 'onetake-e2861.firebaseapp.com',
-  projectId: 'onetake-e2861',
-  storageBucket: 'onetake-e2861.firebasestorage.app',
-  messagingSenderId: '202693996413',
-  appId: '1:202693996413:web:0aac79833ef37e94e32614',
+apiKey: 'AIzaSyA7ScJW4UKvFIsCCe7iuvFQlrtTsuKVhlc',
+authDomain: 'onetake-e2861.firebaseapp.com',
+projectId: 'onetake-e2861',
+storageBucket: 'onetake-e2861.firebasestorage.app',
+messagingSenderId: '202693996413',
+appId: '1:202693996413:web:0aac79833ef37e94e32614',
 };
 
 const firebaseConfig = hasFirebaseEnv()
-  ? {
-      apiKey: env.firebaseApiKey,
-      authDomain: env.firebaseAuthDomain,
-      projectId: env.firebaseProjectId,
-      storageBucket: env.firebaseStorageBucket,
-      messagingSenderId: env.firebaseMessagingSenderId,
-      appId: env.firebaseAppId,
-    }
-  : hardcodedFallback;
+? {
+apiKey: env.firebaseApiKey,
+authDomain: env.firebaseAuthDomain,
+projectId: env.firebaseProjectId,
+storageBucket: env.firebaseStorageBucket,
+messagingSenderId: env.firebaseMessagingSenderId,
+appId: env.firebaseAppId,
+}
+: hardcodedFallback;
 
-const app = initializeApp(firebaseConfig);
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-export const auth = getAuth(app);
+let authInstance;
+
+try {
+authInstance = initializeAuth(app, {
+persistence: getReactNativePersistence(AsyncStorage),
+});
+} catch (error) {
+authInstance = getAuth(app);
+}
+
+export const auth = authInstance;
 export const db = getFirestore(app);
 export const storage = getStorage(app);
+export const functions = getFunctions(app);
 
 export default app;

@@ -20,6 +20,12 @@ export function subscribeToProfile(userId, onData, onError) {
   return onSnapshot(ref, (snap) => onData(snap.exists() ? { id: snap.id, ...snap.data() } : null), onError);
 }
 
+export async function getProfileById(userId) {
+  if (!userId) return null;
+  const snap = await getDoc(doc(db, 'users', userId));
+  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+}
+
 export async function ensureUserProfile(user) {
   const ref = doc(db, 'users', user.uid);
   const snap = await getDoc(ref);
@@ -77,7 +83,9 @@ export async function saveProfileSetup({ uid, email, username, displayName, bio 
   const usernameRef = doc(db, 'usernames', usernameLower);
 
   await runTransaction(db, async (tx) => {
-    const [userSnap, usernameSnap] = await Promise.all([tx.get(userRef), tx.get(usernameRef)]);
+    const userSnap = await tx.get(userRef);
+    const usernameSnap = await tx.get(usernameRef);
+
     const userData = userSnap.exists() ? userSnap.data() : {};
     const previousUsernameLower = userData?.usernameLower || '';
 
@@ -125,13 +133,6 @@ export async function updateProfileBasics(uid, updates) {
   });
 }
 
-export async function enableAdminForUser(uid) {
-  if (!uid) throw new Error('Missing user id.');
-  await updateDoc(doc(db, 'users', uid), {
-    role: 'admin',
-    updatedAt: serverTimestamp(),
-  });
-}
 
 export async function searchUsersByUsername(term) {
   const cleaned = sanitizeUsername(term);

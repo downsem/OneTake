@@ -1,21 +1,35 @@
-import { collection, doc, onSnapshot, query, runTransaction, where } from 'firebase/firestore';
+import {
+  doc,
+  getDoc,
+  increment,
+  onSnapshot,
+  query,
+  collection,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+  deleteDoc,
+  runTransaction,
+} from 'firebase/firestore';
 import { db } from '../lib/firebase';
 
 export const REACTION_TYPES = ['like', 'laugh', 'crazy', 'fire', 'respect'];
 
+function reactionIdFor(responseId, uid) {
+  return `${responseId}_${uid}`;
+}
+
 export function subscribeMyReactions(uid, onData, onError) {
-  if (!uid) {
-    onData({});
-    return () => {};
-  }
+  const q = query(collection(db, 'responseReactions'), where('uid', '==', uid));
 
   return onSnapshot(
-    query(collection(db, 'responseReactions'), where('uid', '==', uid)),
+    q,
     (snap) => {
       const map = {};
-      snap.docs.forEach((d) => {
-        const data = d.data();
-        map[data.responseId] = data.type;
+      snap.docs.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (data.responseId && data.type) map[data.responseId] = data.type;
       });
       onData(map);
     },
@@ -24,61 +38,49 @@ export function subscribeMyReactions(uid, onData, onError) {
 }
 
 export async function toggleReaction({ responseId, uid, nextType }) {
-  if (!REACTION_TYPES.includes(nextType)) throw new Error('Unknown reaction.');
-  const reactionRef = doc(db, 'responseReactions', `${responseId}_${uid}`);
+  if (!responseId) throw new Error('Missing response id.');
+  if (!uid) throw new Error('Missing user id.');
+  if (!REACTION_TYPES.includes(nextType)) throw new Error('Invalid reaction type.');
+
+  const reactionRef = doc(db, 'responseReactions', reactionIdFor(responseId, uid));
   const responseRef = doc(db, 'responses', responseId);
 
   await runTransaction(db, async (tx) => {
-    const [reactionSnap, responseSnap] = await Promise.all([tx.get(reactionRef), tx.get(responseRef)]);
-    if (!responseSnap.exists()) throw new Error('Response not found.');
-    const responseData = responseSnap.data();
-    const currentCounts = responseData.reactionCounts || {};
+    const reactionSnap = await tx.get(reactionRef);
+    const currentType = reactionSnap.exists() ? reactionSnap.data()?.type : null;
 
-    if (reactionSnap.exists()) {
-      const previousType = reactionSnap.data().type;
-      if (previousType === nextType) {
-        tx.delete(reactionRef);
-        tx.update(responseRef, {
-          reactionCounts: {
-            ...currentCounts,
-            [previousType]: Math.max((currentCounts[previousType] || 0) - 1, 0),
-          },
-        });
-        return;
-      }
-
-      tx.set(
-        reactionRef,
-        {
-          responseId,
-          uid,
-          type: nextType,
-          updatedAtClient: Date.now(),
-        },
-        { merge: true }
-      );
+    if (currentType === nextType) {
+      tx.delete(reactionRef);
       tx.update(responseRef, {
-        reactionCounts: {
-          ...currentCounts,
-          [previousType]: Math.max((currentCounts[previousType] || 0) - 1, 0),
-          [nextType]: (currentCounts[nextType] || 0) + 1,
-        },
+        [`reactionCounts.${currentType}`]: increment(-1),
+        updatedAt: serverTimestamp(),
       });
       return;
     }
 
-    tx.set(reactionRef, {
-      responseId,
-      uid,
-      type: nextType,
-      createdAtClient: Date.now(),
-      updatedAtClient: Date.now(),
-    });
-    tx.update(responseRef, {
-      reactionCounts: {
-        ...currentCounts,
-        [nextType]: (currentCounts[nextType] || 0) + 1,
+    if (currentType) {
+      tx.update(responseRef, {
+        [`reactionCounts.${currentType}`]: increment(-1),
+        [`reactionCounts.${nextType}`]: increment(1),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      tx.update(responseRef, {
+        [`reactionCounts.${nextType}`]: increment(1),
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    tx.set(
+      reactionRef,
+      {
+        responseId,
+        uid,
+        type: nextType,
+        updatedAt: serverTimestamp(),
+        createdAtClient: Date.now(),
       },
-    });
+      { merge: true }
+    );
   });
 }

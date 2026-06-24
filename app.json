@@ -6,26 +6,56 @@
     "orientation": "portrait",
     "scheme": "onetake",
     "userInterfaceStyle": "automatic",
-    "platforms": ["ios", "android", "web"],
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "icon": "./assets/icon.png",
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#FFC21F",
+          "defaultChannel": "default"
+        }
+      ]
+    ],
     "ios": {
+      "icon": "./assets/icon.png",
       "supportsTablet": false,
       "bundleIdentifier": "com.downsem.onetake",
       "infoPlist": {
         "NSCameraUsageDescription": "OneTake needs camera access to record your takes.",
-        "NSMicrophoneUsageDescription": "OneTake needs microphone access to record audio in your takes."
+        "NSMicrophoneUsageDescription": "OneTake needs microphone access to record audio in your takes.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
       "package": "com.downsem.onetake",
-      "permissions": ["CAMERA", "RECORD_AUDIO"]
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFC21F"
+      }
     },
     "web": {
       "bundler": "metro"
     },
     "extra": {
       "eas": {
-        "projectId": "REPLACE_WITH_EAS_PROJECT_ID"
+        "projectId": "bbbf40d8-6eec-4006-acf8-1c850f9f5708"
       }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/bbbf40d8-6eec-4006-acf8-1c850f9f5708"
     }
   }
 }

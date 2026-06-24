@@ -10,7 +10,8 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from '../lib/firebase';
 
 function chunk(items, size) {
   const out = [];
@@ -32,6 +33,7 @@ export async function createResponseFromTake({
   durationSeconds,
 }) {
   const responseRef = doc(db, 'responses', responseId);
+
   await setDoc(responseRef, {
     responseId,
     promptId: recipient.promptId,
@@ -57,7 +59,7 @@ export async function createResponseFromTake({
     promptTextSnapshot: recipient.promptTextSnapshot,
     promptIssuedAtClient: recipient.startAtClient,
     authorDisplayNameSnapshot: user.displayName || user.email || 'User',
-    authorUsernameSnapshot: user.username || '',
+    authorUsernameSnapshot: user.usernameLower || user.username || '',
     authorPhotoURLSnapshot: user.photoURL || '',
   });
 
@@ -69,15 +71,15 @@ export async function createResponseFromTake({
 }
 
 export async function deleteResponse(responseId) {
-  await updateDoc(doc(db, 'responses', responseId), {
-    status: 'deleted',
-    deletedAtClient: Date.now(),
-    updatedAt: serverTimestamp(),
-  });
+  if (!responseId) throw new Error('Missing response id.');
+  const callable = httpsCallable(functions, 'deleteResponse');
+  const result = await callable({ responseId });
+  return result.data;
 }
 
 export function subscribeFeedResponses(visibleUserIds, onData, onError) {
   const ids = Array.from(new Set((visibleUserIds || []).filter(Boolean)));
+
   if (ids.length === 0) {
     onData([]);
     return () => {};
@@ -89,9 +91,15 @@ export function subscribeFeedResponses(visibleUserIds, onData, onError) {
   const emit = () => {
     const merged = [];
     state.forEach((items) => merged.push(...items));
+
     const unique = Array.from(new Map(merged.map((item) => [item.id, item])).values())
       .filter((item) => item.status === 'ready' && !item.deletedAtClient)
-      .sort((a, b) => (b.promptIssuedAtClient || 0) - (a.promptIssuedAtClient || 0) || (b.createdAtClient || 0) - (a.createdAtClient || 0));
+      .sort(
+        (a, b) =>
+          (b.promptIssuedAtClient || 0) - (a.promptIssuedAtClient || 0) ||
+          (b.createdAtClient || 0) - (a.createdAtClient || 0)
+      );
+
     onData(unique);
   };
 
@@ -121,6 +129,10 @@ export function subscribeUserResponses(uid, onData, onError) {
     },
     onError
   );
+}
+
+export function subscribeProfileResponses(uid, onData, onError) {
+  return subscribeUserResponses(uid, onData, onError);
 }
 
 export async function getResponse(responseId) {

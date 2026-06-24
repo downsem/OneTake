@@ -1,30 +1,11 @@
-# OneTake Final MVP Release Checklist
+# OneTake Release Readiness Checklist
 
-## Core app
-- [ ] Auth works
-- [ ] Record flow works
-- [ ] My Takes works
-- [ ] Delete works
-- [ ] Settings works
-- [ ] Admin panel only visible to admin role
-
-## Firebase
-- [ ] Email/password enabled
-- [ ] Firestore rules published
-- [ ] Storage rules published
-
-## Notifications
-- [ ] Expo notifications permissions tested on real device
-- [ ] Push token saved to user profile
-
-## Apple prep
-- [ ] Apple Developer account active
-- [ ] Bundle ID finalized
-- [ ] App icon & splash final
-- [ ] Privacy policy URL ready
-- [ ] Support URL ready
-
-## Submission
-- [ ] EAS build iOS preview
-- [ ] TestFlight internal test
-- [ ] Production build uploaded
+- App uses production-facing language only.
+- App Store screenshots show actual app screens in use.
+- Support URL points to a dedicated support page.
+- Privacy Policy URL points to the published privacy policy.
+- Account deletion is available inside the app.
+- Community Guidelines and Terms are shown before UGC access.
+- Report and Block controls are visible on user-generated video content.
+- Notifications are verified on a physical device.
+- Prompt issue → open → record → submit → feed → reaction loop is verified.

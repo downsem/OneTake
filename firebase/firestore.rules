@@ -11,32 +11,124 @@ service cloud.firestore {
 
     function isAdmin() {
       return signedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function friendshipIdA(uidA, uidB) {
+      return uidA + '_' + uidB;
+    }
+
+    function friendshipIdB(uidA, uidB) {
+      return uidB + '_' + uidA;
+    }
+
+    function isFriendWith(uid) {
+      return signedIn() && uid != request.auth.uid && (
+        exists(/databases/$(database)/documents/friendships/$(friendshipIdA(request.auth.uid, uid))) ||
+        exists(/databases/$(database)/documents/friendships/$(friendshipIdB(request.auth.uid, uid)))
+      );
+    }
+
+    function canReadResponse() {
+      return signedIn() && (
+        resource.data.uid == request.auth.uid ||
+        isAdmin() ||
+        (resource.data.visibility == 'friends' && isFriendWith(resource.data.uid))
+      );
+    }
+
+    function canReadResponseById(responseId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/responses/$(responseId)) && (
+          get(/databases/$(database)/documents/responses/$(responseId)).data.uid == request.auth.uid ||
+          isAdmin() ||
+          (
+            get(/databases/$(database)/documents/responses/$(responseId)).data.visibility == 'friends' &&
+            isFriendWith(get(/databases/$(database)/documents/responses/$(responseId)).data.uid)
+          )
+        );
+    }
+
+    function userMayUpdateOwnProfile(userId) {
+      return isSelf(userId) &&
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'email',
+          'username',
+          'usernameLower',
+          'displayName',
+          'bio',
+          'photoURL',
+          'lastSeenAt',
+          'updatedAt',
+          'responseCount',
+          'statsHidden',
+          'deletionRequestedAtClient',
+          'acceptedTermsVersion',
+          'acceptedTermsAt',
+          'acceptedTermsAtClient',
+          'communityGuidelinesAccepted'
+        ]);
     }
 
     match /users/{userId} {
       allow read: if signedIn();
-      allow create, update: if isSelf(userId) || isAdmin();
+
+      allow create: if isSelf(userId) &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.role == 'user';
+
+      allow update: if isAdmin() || userMayUpdateOwnProfile(userId);
       allow delete: if isAdmin();
     }
 
     match /usernames/{usernameLower} {
       allow read: if signedIn();
-      allow create, update: if (signedIn() && request.resource.data.uid == request.auth.uid) || isAdmin();
-      allow delete: if signedIn() || isAdmin();
+      allow create, update: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow delete: if signedIn() && resource != null && resource.data.uid == request.auth.uid;
     }
 
     match /friendRequests/{requestId} {
-      allow read: if signedIn() && (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid || isAdmin());
-      allow create: if signedIn() && request.resource.data.fromUid == request.auth.uid;
-      allow update: if signedIn() && (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid || isAdmin());
-      allow delete: if isAdmin();
+      allow read: if signedIn() && (
+        resource == null ||
+        resource.data.fromUid == request.auth.uid ||
+        resource.data.toUid == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if signedIn() &&
+        request.resource.data.fromUid == request.auth.uid &&
+        request.resource.data.toUid != request.auth.uid;
+
+      allow update: if signedIn() && (
+        resource.data.fromUid == request.auth.uid ||
+        resource.data.toUid == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow delete: if signedIn() && (
+        resource.data.fromUid == request.auth.uid ||
+        resource.data.toUid == request.auth.uid ||
+        isAdmin()
+      );
     }
 
     match /friendships/{friendshipId} {
-      allow read: if signedIn() && (request.auth.uid in resource.data.users || isAdmin());
-      allow create: if signedIn() && (request.auth.uid in request.resource.data.users || isAdmin());
-      allow update, delete: if isAdmin();
+      allow read: if signedIn() && (
+        resource == null ||
+        request.auth.uid in resource.data.users ||
+        isAdmin()
+      );
+
+      allow create: if signedIn() &&
+        request.auth.uid in request.resource.data.users;
+
+      allow update, delete: if signedIn() && (
+        request.auth.uid in resource.data.users ||
+        isAdmin()
+      );
     }
 
     match /promptTemplates/{promptTemplateId} {
@@ -52,26 +144,68 @@ service cloud.firestore {
     match /promptRecipients/{promptRecipientId} {
       allow read: if signedIn() && (resource.data.uid == request.auth.uid || isAdmin());
       allow create: if isAdmin();
-      allow update: if signedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow update: if signedIn() && (
+        isAdmin() ||
+        (
+          resource.data.uid == request.auth.uid &&
+          request.resource.data.uid == resource.data.uid &&
+          request.resource.data.promptId == resource.data.promptId &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'deliveryStatus',
+            'openedAt',
+            'openedAtClient',
+            'recordingStartedAtClient',
+            'respondedAtClient',
+            'forfeitedAtClient',
+            'updatedAt'
+          ])
+        )
+      );
       allow delete: if isAdmin();
     }
 
     match /responses/{responseId} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
-      allow update: if signedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow delete: if isAdmin();
+      allow read: if canReadResponse();
+      allow create: if signedIn() &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.visibility == 'friends';
+      allow update: if signedIn() && (
+        isAdmin() ||
+        (
+          resource.data.uid == request.auth.uid &&
+          request.resource.data.uid == resource.data.uid &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status',
+            'deletedAtClient',
+            'updatedAt'
+          ])
+        ) ||
+        (
+          canReadResponse() &&
+          request.resource.data.uid == resource.data.uid &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'reactionCounts',
+            'updatedAt'
+          ])
+        )
+      );
+      allow delete: if signedIn() && (resource.data.uid == request.auth.uid || isAdmin());
     }
 
     match /responseReactions/{reactionId} {
-      allow read: if signedIn();
-      allow create, update: if (signedIn() && request.resource.data.uid == request.auth.uid) || isAdmin();
-      allow delete: if signedIn() || isAdmin();
+      allow read: if signedIn() && (
+        resource.data.uid == request.auth.uid ||
+        canReadResponseById(resource.data.responseId)
+      );
+      allow create, update: if signedIn() &&
+        request.resource.data.uid == request.auth.uid &&
+        canReadResponseById(request.resource.data.responseId);
+      allow delete: if signedIn() && resource != null && resource.data.uid == request.auth.uid;
     }
 
     match /notifications/{notificationId} {
       allow read, update: if signedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if (signedIn() && request.resource.data.uid == request.auth.uid) || isAdmin();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
       allow delete: if isAdmin();
     }
 
@@ -82,7 +216,19 @@ service cloud.firestore {
     }
 
     match /blocks/{blockId} {
-      allow read, create, update, delete: if signedIn();
+      allow read: if signedIn() && (
+        resource == null ||
+        resource.data.blockerUid == request.auth.uid ||
+        resource.data.blockedUid == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if signedIn() &&
+        request.resource.data.blockerUid == request.auth.uid &&
+        request.resource.data.blockedUid != request.auth.uid;
+
+      allow update: if signedIn() && (resource.data.blockerUid == request.auth.uid || isAdmin());
+      allow delete: if signedIn() && (resource.data.blockerUid == request.auth.uid || isAdmin());
     }
 
     match /reports/{reportId} {
@@ -92,8 +238,35 @@ service cloud.firestore {
 
     match /pushTokens/{tokenId} {
       allow read: if signedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create, update: if (signedIn() && request.resource.data.uid == request.auth.uid) || isAdmin();
-      allow delete: if isAdmin();
+      allow create, update: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /pushLogs/{logId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /notificationDeliveries/{deliveryId} {
+      allow read: if signedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow update: if signedIn() &&
+        resource.data.uid == request.auth.uid &&
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.promptId == resource.data.promptId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'openedAt',
+          'openedAtClient',
+          'appOpenedFromPush',
+          'updatedAt'
+        ]);
+      allow create, delete: if false;
+    }
+
+    match /analyticsEvents/{eventId} {
+      allow create: if signedIn() &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.name is string;
+      allow read, update, delete: if isAdmin();
     }
   }
 }
